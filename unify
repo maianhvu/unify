@@ -1,0 +1,264 @@
+#!/usr/bin/env ruby
+# Constants
+ANSI_RESET = "\u001B[0m";
+ANSI_YELLOW = "\u001B[33m";
+ANSI_PURPLE = "\u001B[35m";
+ANSI_CYAN = "\u001B[36m";
+
+MATCHER_GROUP_COMPOUND_OP = "OP"
+MATCHER_GROUP_COMPOUND_PARAMS = "PARAMS"
+PATTERN_COMPOUND = /^(?<#{MATCHER_GROUP_COMPOUND_OP}>[^(]+)\((?<#{MATCHER_GROUP_COMPOUND_PARAMS}>.+)\)$/
+PATTERN_LIST_DELIMITER = /,\s*/
+PATTERN_VARIABLE = /^[a-z]+[a-z0-9]*$/
+
+# Classes
+class Constant
+  attr_reader :value
+
+  def initialize(value)
+    @value = value
+  end
+
+  def eql?(o)
+    return false if o.nil?
+    return false unless o.is_a? Constant
+    @value.eql?(o.value)
+  end
+
+  def ==(o)
+    eql?(o)
+  end
+
+  def hash
+    @value.hash
+  end
+
+  def to_s
+    "#{ANSI_CYAN}#{@value.to_s}#{ANSI_RESET}"
+  end
+end
+
+class Variable
+  attr_reader :name
+
+  def initialize(name)
+    @name = name.intern
+  end
+
+  def eql?(o)
+    return false if o.nil?
+    return false unless o.is_a? Variable
+    @name.eql?(o.name)
+  end
+
+  def ==(o)
+    eql?(o)
+  end
+
+  def hash
+    @name.hash
+  end
+
+  def to_s
+    "#{ANSI_YELLOW}#{@name.to_s}#{ANSI_RESET}"
+  end
+end
+
+class Compound
+  attr_reader :op, :params
+
+  def initialize(op, *params)
+    @op = op.intern
+    @params = params.flatten
+  end
+
+  def to_s
+    "#{ANSI_PURPLE}#{@op.to_s}(#{ANSI_RESET}#{params.map(&:to_s).join(', ')}#{ANSI_PURPLE})#{ANSI_RESET}"
+  end
+
+  def eql?(o)
+    return false if o.nil?
+    return false unless o.is_a? Compound
+    @op.eql?(o.op) && @params.eql?(o.params)
+  end
+
+  def ==(o)
+    eql?(o)
+  end
+
+  def hash
+    [@op, @params].hash
+  end
+end
+
+class Substitution
+  def initialize
+    @substitutions = {}
+  end
+
+  def include?(var)
+    return false unless var.is_a? Variable
+    @substitutions.has_key? var
+  end
+
+  def for(var)
+    return nil unless include?(var)
+    @substitutions[var]
+  end
+
+  def add(var, val)
+    return unless var.is_a? Variable
+    return if include?(var) # No duplicates
+    @substitutions[var] = val
+    self
+  end
+
+  def to_s
+    str = "{"
+    str << @substitutions.to_a
+      .map { |s| s.join('/') }
+      .sort
+      .join(', ')
+    str << "}"
+    str
+  end
+end
+
+def unify(x, y, theta)
+  return :failure if theta == :failure
+
+  if x == y then return theta
+  elsif x.is_a? Variable then return unify_var(x, y, theta)
+  elsif y.is_a? Variable then return unify_var(y, x, theta)
+  elsif x.is_a?(Compound) && y.is_a?(Compound) then
+    return unify(x.params, y.params, unify(x.op, y.op, theta))
+  elsif x.is_a?(Array) && y.is_a?(Array) then
+    return unify(
+      x[1..x.length-1], # x.rest
+      y[1..y.length-1], # y.rest
+      unify(x.first, y.first, theta)
+    )
+  else return :failure
+  end
+end
+
+def unify_var(var, x, theta)
+  if theta.include? var then
+    return unify(theta.for(var), x, theta)
+  elsif theta.include? x then
+    return unify(var, theta.for(x), theta)
+  elsif occur_check?(var, x) then
+    return :failure
+  else
+    return theta.add(var, x) # the add method returns self
+  end
+end
+
+def occur_check?(var, x)
+  return false unless x.is_a? Compound
+  x.params.include? var
+end
+
+def is_compound_expression?(str)
+  # There are no parentheses -> not a compound
+  return false unless bracket_index = str.index('(')
+  # There is a comma before the first bracket -> should be a list instead
+  return false if !(comma_index = str.index(',')).nil? && comma_index < bracket_index
+
+  # Keep track of the index of the closing bracket of the first bracket
+  close_index = nil
+  bracket_count = 1
+
+  # Run through from the position of the first bracket + 1 to the end Check for
+  # other brackets along the way, if the first bracket matches with the very
+  # last bracket in the string (which also occurs at the end of the string),
+  # then we can conclude the string is a compound element
+  for i in bracket_index+1..str.length-1
+    if str[i] == '('
+      bracket_count += 1
+      next
+
+    elsif str[i] == ')'
+      bracket_count -= 1
+      if bracket_count == 0
+        close_index = i
+        break
+      end
+    end
+
+  end
+
+  !close_index.nil? && close_index == str.length-1
+end
+
+def split_list(str)
+  # Remove all spaces
+  str = str.gsub(/\s+/, "")
+
+  # Prepare a list of elements
+  list = []
+
+  # Keep track of brackets
+  # Increment bracket count by 1 whenever encountering an open bracket and
+  # decrement by 1 whenever encountering a close bracket If bracket_count == 0
+  # we are sure the current character is not surrounded by ANY bracket
+  bracket_count = 0
+
+  # Keep track of the starting index of the current entity
+  # We can later get the entity using str[start..index-1] where index is the
+  # index of the comma
+  start = 0
+  index = 0
+
+  until index >= str.length
+    if str[index] == '(' then
+      bracket_count += 1
+    elsif str[index] == ')' then
+      bracket_count -= 1
+
+    elsif bracket_count == 0 && str[index] == ','
+      list << str[start..index-1]
+      start = index + 1
+    end
+
+    index += 1
+  end
+
+  # Account for the last element in the list
+  list << str[start..str.length-1]
+  list
+end
+
+def parse_entity(str)
+  # Trim string first
+  str = str.lstrip.rstrip
+
+  if is_compound_expression?(str) && matches = PATTERN_COMPOUND.match(str) then
+    # Parse string as a Compount
+    op = matches[MATCHER_GROUP_COMPOUND_OP]
+    params = parse_entity(matches[MATCHER_GROUP_COMPOUND_PARAMS])
+    return Compound.new(op, params)
+  elsif PATTERN_LIST_DELIMITER.match(str) then
+    # Parse string as a list
+    return split_list(str).map { |e| parse_entity(e) }
+  elsif PATTERN_VARIABLE.match(str) then
+    # Parse string as a variable
+    return Variable.new(str)
+  else
+    # Parse string as a constant
+    return Constant.new(str)
+  end
+end
+
+# Main method
+print "first  = "
+first = gets.chomp
+print "second = "
+second = gets.chomp
+
+first = parse_entity(first)
+second = parse_entity(second)
+
+print "unify(first, second) = "
+puts unify(first, second, Substitution.new)
+

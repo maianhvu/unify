@@ -251,10 +251,18 @@ def parse_entity(str)
 end
 
 # Main method
-print "first  = "
-first = gets.chomp
-print "second = "
-second = gets.chomp
+first = nil
+second = nil
+
+if ARGV.length < 2
+  print "first  = "
+  first = gets.chomp
+  print "second = "
+  second = gets.chomp
+else
+  first = ARGV[0]
+  second = ARGV[1]
+end
 
 first = parse_entity(first)
 second = parse_entity(second)
